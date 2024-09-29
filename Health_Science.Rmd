@@ -1,0 +1,503 @@
+---
+title: "Health_Science"
+output: html_document
+date: "2024-09-28"
+---
+# Analyzing Health Science Data and Travel Patterns
+
+This analysis focuses on deaths due to pneumonia, flu, or COVID-19 in U.S. states between 2020 and 2023. We supplement the analysis with travel data from quarterly reports to identify possible correlations between these health outcomes and travel behavior.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+## Loading and Cleaning Data
+
+We start by loading the health science dataset and removing rows with missing values to ensure clean data for downstream analysis.
+
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(corrplot)
+library(dplyr)
+library(readr)
+library(gridExtra)
+```
+
+```{r, eval=TRUE}
+health <- read_csv("HealthScienceData.csv")
+health
+health_full_clean <- na.omit(health)
+health_full_clean
+```
+```{r}
+filtered <- health_full_clean[health_full_clean$`Age Group` != "All Ages", ]
+filtered$Quarter <- ifelse(filtered$MMWRweek <= 13, 1,
+                     ifelse(filtered$MMWRweek <= 25, 2,
+                     ifelse(filtered$MMWRweek <= 38, 3, 4)))
+colnames(filtered) <- gsub(" ", "", colnames(filtered))
+colnames(filtered) <- gsub("-", "", colnames(filtered))
+colnames(filtered) <- gsub(",", "_", colnames(filtered))
+filtered$AgeGroup <- factor(filtered$AgeGroup)
+filtered
+
+filtered2 <- filtered[!filtered$Jurisdiction %in% c("United States", "HHS Region 1", "HHS Region 2", "HHS Region 3","HHS Region 4", "HHS Region 5", "HHS Region 6", "HHS Region 7", "HHS Region 8", "HHS Region 9", "HHS Region 10"), ]
+filtered2
+```
+
+## Exploratory Data Analysis
+
+Before modeling, we explore the dataset to understand the deaths caused by pneumonia, flu, or COVID-19, and how these vary by state and time period. We use quarters as time periods to prepare for analysis with flight passenger data.
+
+```{r}
+par(mfrow = c(2, 3)) 
+for (var in names(filtered2)[c(11, 12, 13, 14, 15, 16)]) {
+  boxplot(as.formula(paste(var, "~ AgeGroup")), data = filtered2, main = var)
+}
+```
+
+```{r}
+par(mfrow = c(2, 3)) 
+for (var in names(filtered2)[c(11, 12, 13, 14, 15, 16)]) {
+  boxplot(as.formula(paste(var, "~ Jurisdiction")), data = filtered2, main = var)
+}
+```
+
+```{r}
+par(mfrow = c(2, 3)) 
+for (var in names(filtered2)[c(11, 12, 13, 14, 15, 16)]) {
+  boxplot(as.formula(paste(var, "~ MMWRyear")), data = filtered2, main = var)
+}
+```
+```{r}
+library(dplyr)
+
+health %>%
+  ungroup() %>%
+  arrange(desc((as.numeric('Total Deaths')))) %>%
+  select('Jurisdiction', 'Total Deaths', 'MMWRyear')
+```
+
+## Visualizing Health Outcomes
+
+We create visualizations such as bar charts and line graphs to display trends in health-related deaths across states. These help to identify patterns over the quarters.
+
+
+```{r}
+total_deaths_by_quarter <- filtered2 %>%
+  group_by(Quarter) %>%
+  summarize(TotalDeaths = sum(TotalDeaths))
+
+ggplot(total_deaths_by_quarter, aes(x = Quarter, y = TotalDeaths)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  labs(title = "Total Deaths by Quarter", x = "Quarter", y = "Total Deaths") +
+  theme_minimal()
+```
+
+```{r}
+filtered_region <- filtered[filtered$Jurisdiction %in% c("HHS Region 1", "HHS Region 2", "HHS Region 3","HHS Region 4", "HHS Region 5", "HHS Region 6", "HHS Region 7", "HHS Region 8", "HHS Region 9", "HHS Region 10"), ]
+
+filtered_region$Jurisdiction <- factor(filtered_region$Jurisdiction, levels = c("HHS Region 1", "HHS Region 2", "HHS Region 3","HHS Region 4", "HHS Region 5", "HHS Region 6", "HHS Region 7", "HHS Region 8", "HHS Region 9", "HHS Region 10"))
+
+total_deaths_by_region_and_quarter <- filtered_region %>%
+  group_by(Jurisdiction, Quarter) %>%
+  summarize(TotalDeaths = sum(Pneumonia_Influenza_orCOVID19Deaths, na.rm = TRUE))
+
+ggplot(total_deaths_by_region_and_quarter, aes(x = Quarter, y = TotalDeaths, fill = Jurisdiction)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Total Deaths by Quarter and Region", x = "Quarter", y = "Total Deaths") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")
+
+```
+
+```{r}
+total_deaths_by_year_quarter <- filtered_region %>%
+  group_by(MMWRyear, Quarter, Jurisdiction) %>%
+  summarize(TotalDeaths = sum(Pneumonia_Influenza_orCOVID19Deaths, na.rm = TRUE), .groups = 'drop')
+
+years <- unique(total_deaths_by_year_quarter$MMWRyear)
+plot_list <- list()
+
+for (year in years) {
+  year_data <- total_deaths_by_year_quarter %>%
+    filter(MMWRyear == year)
+  
+  p <- ggplot(year_data, aes(x = Quarter, y = TotalDeaths, fill = Jurisdiction)) +
+    geom_bar(stat = "identity", position = "dodge") + 
+    labs(title = paste("Total Deaths by Quarter and Region in", year),
+         x = "Quarter",
+         y = "Total Deaths") +
+    theme_minimal() +
+    scale_fill_brewer(palette = "Set3")
+  
+  plot_list[[as.character(year)]] <- p
+}
+grid.arrange(grobs = plot_list, ncol = 2, nrow = 2)
+```
+
+```{r}
+disease_columns <- c("COVID19Deaths", "PneumoniaDeaths", "InfluenzaDeaths")
+par(mfrow = c(3, 4))
+for (disease in disease_columns) {
+  deaths_by_year_quarter <- filtered_region %>%
+    group_by(MMWRyear, Quarter, Jurisdiction) %>%
+    summarize(DiseaseDeaths = sum(.data[[disease]], na.rm = TRUE), .groups = 'drop')
+  years <- unique(total_deaths_by_year_quarter$MMWRyear)
+
+for (year in years) {
+  year_data <- total_deaths_by_year_quarter %>%
+    filter(MMWRyear == year)
+  
+  p <- ggplot(year_data, aes(x = Quarter, y = TotalDeaths, fill = Jurisdiction)) +
+    geom_bar(stat = "identity", position = "dodge") + 
+    labs(title = paste("Total Deaths by",  disease, "by Quarter and Region in", year),
+         x = "Quarter",
+         y = "Total Deaths") +
+    theme_minimal() +
+    scale_fill_brewer(palette = "Set3")
+  
+  print(p)
+}}
+```
+```{r}
+disease_columns <- c("COVID19Deaths", "PneumoniaDeaths", "InfluenzaDeaths")
+
+for (year in c(2020, 2021, 2022, 2023)) {
+
+  plot_list <- list()
+  
+  for (disease in disease_columns) {
+
+    deaths_by_year_quarter <- filtered_region %>%
+      group_by(MMWRyear, Quarter, Jurisdiction) %>%
+      summarize(DiseaseDeaths = sum(.data[[disease]], na.rm = TRUE), .groups = 'drop')
+    year_data <- deaths_by_year_quarter %>%
+      filter(MMWRyear == year)
+
+    p <- ggplot(year_data, aes(x = Quarter, y = DiseaseDeaths, fill = Jurisdiction)) +
+      geom_bar(stat = "identity", position = "dodge") + 
+      labs(title = paste("Total Deaths by", disease, "in", year),
+           x = "Quarter",
+           y = "Total Deaths") +
+      theme_minimal() +
+      scale_fill_brewer(palette = "Set3")
+    plot_list[[disease]] <- p
+  }
+
+  grid.arrange(grobs = plot_list, ncol = 3)
+}
+
+
+```
+
+## Flight and Travel Data
+
+Next, we look at the filtered dataset containing flight data and passengers. We want to look at the destinations of flights and the number of passengers going to these destinations. We use bar graphs and analyze this data by HHS region as well, so that we can attempt to correlate with the health outcomes data.
+
+
+```{r}
+business_data <- read_csv("FilteredBusinessDataset.csv")
+flights <- business_data[order(business_data$Year, business_data$quarter),]
+head(flights)
+```
+
+```{r}
+flights2020 <- filter(flights, Year == 2020)
+filtered_2020 <- flights2020[flights2020$quarter %in% c("1", "2", "3", "4"), ]
+
+filtered_2020$quarter <- factor(filtered_2020$quarter, levels = c("1", "2", "3" ,"4"))
+
+flights2020_by_quarter <- filtered_2020 %>%
+  group_by(Year, quarter) %>%
+  summarize(passengers = sum(passengers, na.rm = TRUE))
+
+ggplot(flights2020_by_quarter, aes(x = quarter, y = passengers/100000, fill = quarter)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Total Flyers by Quarter in the US in 2020", x = "Quarter", y = "Total Passengers in Millions") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")
+```
+
+```{r}
+flights2021 <- filter(flights, Year == 2021)
+filtered_2021 <- flights2021[flights2021$quarter %in% c("1", "2", "3", "4"), ]
+
+filtered_2021$quarter <- factor(filtered_2021$quarter, levels = c("1", "2", "3" ,"4"))
+
+flights2021_by_quarter <- filtered_2021 %>%
+  group_by(Year, quarter) %>%
+  summarize(passengers = sum(passengers, na.rm = TRUE))
+
+ggplot(flights2021_by_quarter, aes(x = quarter, y = passengers/100000, fill = quarter)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Total Flyers by Quarter in the US in 2021", x = "Quarter", y = "Total Passengers by Millions") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")
+```
+```{r}
+flights2022 <- filter(flights, Year == 2022)
+filtered_2022 <- flights2022[flights2022$quarter %in% c("1", "2", "3", "4"), ]
+
+filtered_2022$quarter <- factor(filtered_2022$quarter, levels = c("1", "2", "3" ,"4"))
+
+flights2022_by_quarter <- filtered_2022 %>%
+  group_by(Year, quarter) %>%
+  summarize(passengers = sum(passengers, na.rm = TRUE))
+
+ggplot(flights2022_by_quarter, aes(x = quarter, y = passengers/100000, fill = quarter)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Total Flyers by Quarter in the US in 2022", x = "Quarter", y = "Total Passengers by Millions") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")
+```
+```{r}
+flights2023 <- filter(flights, Year == 2023)
+filtered_2023 <- flights2023[flights2023$quarter %in% c("1", "2", "3", "4"), ]
+
+filtered_2023$quarter <- factor(filtered_2023$quarter, levels = c("1", "2", "3" ,"4"))
+
+flights2023_by_quarter <- filtered_2023 %>%
+  group_by(Year, quarter) %>%
+  summarize(passengers = sum(passengers, na.rm = TRUE))
+
+ggplot(flights2023_by_quarter, aes(x = quarter, y = passengers/100000, fill = quarter)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Total Flyers by Quarter in the US in 2023", x = "Quarter", y = "Total Passengers by Millions") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")
+```
+Create the dest_state dataframe that found the states of the destination cities in the flight data. 
+
+Create the region_dest_state dataframe to divid each state into HHS regions taht correspond with the CDC data.
+
+```{r HHS Names}
+
+
+dest <- flights %>%
+  separate(city2, into = c("city_name", "dest_state"), sep = ",") %>%
+  arrange(dest_state) 
+      
+
+dest$dest_state <- as.character(dest$dest_state)  
+
+
+for (i in 1:length(dest$dest_state)) {
+  dest$dest_state[i] <- sub("^\\s+", "", dest$dest_state[i])  
+}
+
+
+
+
+dest <- dest %>%
+  
+  mutate(HHSregion = case_when(
+    dest_state %in% c("CT", "ME", "MA", "MA (Metropolitan Area)" ,"NH", "RI", "VT") ~ "HHS Region 1",
+    dest_state %in% c("NJ", "NY", "NY (Metropolitan Area)") ~ "HHS Region 2",
+    dest_state %in% c("DE", "DC (Metropolitan Area)", "MD", "PA", "VA","VA (Metropolitan Area)", "WV") ~ "HHS Region 3",
+    dest_state %in% c("AL", "FL", "FL (Metropolitan Area)", "GA", "KY", "MS", "NC", "SC", "TN") ~ "HHS Region 4",
+    dest_state %in% c("IL", "IN", "MI", "MN", "OH","OH (Metropolitan Area)", "WI") ~ "HHS Region 5",
+    dest_state %in% c("AR", "LA", "NM", "OK", "TX") ~ "HHS Region 6",
+    dest_state %in% c("IA", "KS", "MO", "NE") ~ "HHS Region 7",
+    dest_state %in% c("CO", "MT", "ND", "SD", "UT", "WY") ~ "HHS Region 8",
+    dest_state %in% c("AZ", "CA", "CA (Metropolitan Area)", "HI", "NV") ~ "HHS Region 9",
+    dest_state %in% c("AK", "ID", "OR", "WA") ~ "HHS Region 10",
+    TRUE ~ "Unknown Region" 
+  ))
+
+```
+
+
+
+
+```{r}
+filtered_region_2020 <- filter(dest, Year == 2020)
+
+filtered_region_2020$HHSregion <- factor(filtered_region_2020$HHSregion, levels = c("HHS Region 1", "HHS Region 2", "HHS Region 3","HHS Region 4", "HHS Region 5", "HHS Region 6", "HHS Region 7", "HHS Region 8", "HHS Region 9", "HHS Region 10"))
+
+filtered_region_2020$quarter <- factor(filtered_region_2020$quarter, levels = c("1", "2", "3", "4"))
+
+total_passengers_by_region_and_quarter2020 <- filtered_region_2020 %>%
+  group_by(HHSregion, quarter) %>%
+  summarize(passengers = sum(passengers, na.rm = TRUE))
+
+ggplot(total_passengers_by_region_and_quarter2020, aes(x = quarter, y = passengers/100000, fill = HHSregion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Total Flyers by Quarter and Region in 2020", x = "Quarter", y = "Total Passengers in Millions") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")
+```
+
+```{r}
+filtered_region_2021 <- filter(dest, Year == 2021)
+
+filtered_region_2021$HHSregion <- factor(filtered_region_2021$HHSregion, levels = c("HHS Region 1", "HHS Region 2", "HHS Region 3","HHS Region 4", "HHS Region 5", "HHS Region 6", "HHS Region 7", "HHS Region 8", "HHS Region 9", "HHS Region 10"))
+
+filtered_region_2021$quarter <- factor(filtered_region_2021$quarter, levels = c("1", "2", "3", "4"))
+
+total_passengers_by_region_and_quarter2021 <- filtered_region_2021 %>%
+  group_by(HHSregion, quarter) %>%
+  summarize(passengers = sum(passengers, na.rm = TRUE))
+
+ggplot(total_passengers_by_region_and_quarter2021, aes(x = quarter, y = passengers/100000, fill = HHSregion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Total Flyers by Quarter and Region in 2021", x = "Quarter", y = "Total Passengers in Millions") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")
+```
+
+```{r}
+filtered_region_2022 <- filter(dest, Year == 2022)
+
+filtered_region_2022$HHSregion <- factor(filtered_region_2022$HHSregion, levels = c("HHS Region 1", "HHS Region 2", "HHS Region 3","HHS Region 4", "HHS Region 5", "HHS Region 6", "HHS Region 7", "HHS Region 8", "HHS Region 9", "HHS Region 10"))
+
+filtered_region_2022$quarter <- factor(filtered_region_2022$quarter, levels = c("1", "2", "3", "4"))
+
+total_passengers_by_region_and_quarter2022 <- filtered_region_2022 %>%
+  group_by(HHSregion, quarter) %>%
+  summarize(passengers = sum(passengers, na.rm = TRUE))
+
+ggplot(total_passengers_by_region_and_quarter2022, aes(x = quarter, y = passengers/100000, fill = HHSregion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Total Flyers by Quarter and Region in 2022", x = "Quarter", y = "Total Passengers in Millions") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")
+```
+
+```{r}
+filtered_region_2023 <- filter(dest, Year == 2023)
+
+filtered_region_2023$HHSregion <- factor(filtered_region_2023$HHSregion, levels = c("HHS Region 1", "HHS Region 2", "HHS Region 3","HHS Region 4", "HHS Region 5", "HHS Region 6", "HHS Region 7", "HHS Region 8", "HHS Region 9", "HHS Region 10"))
+
+filtered_region_2023$quarter <- factor(filtered_region_2023$quarter, levels = c("1", "2", "3", "4"))
+
+total_passengers_by_region_and_quarter2023 <- filtered_region_2023 %>%
+  group_by(HHSregion, quarter) %>%
+  summarize(passengers = sum(passengers, na.rm = TRUE))
+
+ggplot(total_passengers_by_region_and_quarter2020, aes(x = quarter, y = passengers/100000, fill = HHSregion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Total Flyers by Quarter and Region in 2020", x = "Quarter", y = "Total Passengers in Millions") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")
+```
+
+## Correlation Analysis
+
+Next, we attempt to correlate health-related deaths with travel data using linear regression models. This helps us see any potential relationships between travel and the deaths caused from flu, pneumonia, or COVID-19 deaths.
+
+```{r}
+flights_aggregate <- dest %>%
+  group_by(HHSregion, Year, quarter) %>%
+  summarise(total_passengers = sum(passengers, na.rm = TRUE), .groups = 'drop')
+
+health_aggregate <- filtered_region %>%
+  group_by(Jurisdiction, MMWRyear, Quarter) %>%
+  summarise(total_deaths = sum(TotalDeaths, na.rm = TRUE), .groups = 'drop')
+
+merged_data <- merge(flights_aggregate, health_aggregate, 
+                     by.x = c("HHSregion", "Year", "quarter"), 
+                     by.y = c("Jurisdiction", "MMWRyear", "Quarter"), 
+                     all = TRUE)
+
+correlation_result <- cor(merged_data$total_passengers, merged_data$total_deaths, use = "complete.obs")
+
+```
+
+```{r}
+
+ggplot(merged_data, aes(x = total_passengers/100000, y = total_deaths/100000)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Correlation Between Passengers and Deaths by Region, Year, and Quarter", 
+       x = "Total Passengers (in 100,000s)", 
+       y = "Total Deaths (in 100,000s)") +
+  theme_minimal()
+
+```
+
+
+```{r}
+year2020_data <- merged_data[merged_data$Year == 2020, ]
+  
+  ggplot(year2020_data, aes(x = total_passengers/100000, y = total_deaths/100000)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Correlation Between Passengers and Deaths by Region and Quarter, in 2020", 
+       x = "Total Passengers (in 100,000s)", 
+       y = "Total Deaths (in 100,000s)") +
+  theme_minimal()
+  
+year2020_data
+```
+```{r}
+year2021_data <- merged_data[merged_data$Year == 2021, ]
+  
+  ggplot(year2021_data, aes(x = total_passengers/100000, y = total_deaths/100000)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Correlation Between Passengers and Deaths by Region and Quarter in year 2021", 
+       x = "Total Passengers (in 100,000s)", 
+       y = "Total Deaths (in 100,000s)") +
+  theme_minimal()
+```
+```{r}
+year2022_data <- merged_data[merged_data$Year == 2022, ]
+  
+  ggplot(year2022_data, aes(x = total_passengers/100000, y = total_deaths/100000)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Correlation Between Passengers and Deaths by Region and Quarter in year 2022", 
+       x = "Total Passengers (in 100,000s)", 
+       y = "Total Deaths (in 100,000s)") +
+  theme_minimal()
+```
+```{r}
+year2023_data <- merged_data[merged_data$Year == 2023, ]
+  
+  ggplot(year2023_data, aes(x = total_passengers/100000, y = total_deaths/100000)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Correlation Between Passengers and Deaths by Region and Quarter in year 2023", 
+       x = "Total Passengers (in 100,000s)", 
+       y = "Total Deaths (in 100,000s)") +
+  theme_minimal()
+```
+
+```{r}
+library(ggcorrplot)
+
+merged_data_numeric <- merged_data %>%
+  mutate(
+    region_numeric = as.numeric(factor(HHSregion)),
+    quarter = as.numeric(quarter)
+  ) %>%
+  select(quarter, region_numeric, total_passengers, total_deaths)
+
+correlation_matrix <- cor(merged_data_numeric, use = "complete.obs")
+
+print(correlation_matrix)
+
+ggcorrplot(correlation_matrix, lab = TRUE, title = "Correlation Matrix")
+```
+```{r}
+model_passenger <- lm(total_deaths ~ total_passengers, data = merged_data)
+summary(model_passenger)
+```
+
+```{r}
+model_year <- lm(total_deaths ~ Year, data = merged_data)
+summary(model_year)
+```
+
+```{r}
+model_region <- lm(total_deaths ~ factor(HHSregion), data = merged_data)
+summary(model_region)
+```
